@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-portfolio"
+version = "0.1.0"
+description = "Local company-research API and operator control room"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = {text = "Proprietary"}
+dependencies = [
+  "alembic==1.19.1",
+  "fastapi==0.141.1",
+  "httpx==0.28.1",
+  "openai==2.54.0",
+  "openpyxl==3.1.5",
+  "pydantic==2.13.4",
+  "pypdf==6.16.2",
+  "python-multipart==0.0.32",
+  "sqlalchemy==2.0.52",
+  "uvicorn==0.52.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy==1.20.2",
+  "pytest==8.4.2",
+  "pytest-cov==7.1.0",
+  "ruff==0.16.4",
+]
+
+[project.scripts]
+portfolio-agent = "portfolio_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers -q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "integration: exercises persistence or API boundaries",
+  "e2e: executes the complete local workflow",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["portfolio_agent"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 70
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["portfolio_agent"]
+strict = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["openpyxl", "openpyxl.*"]
+ignore_missing_imports = true

@@ -1,0 +1,25 @@
+{
+  "schema_version": "company-intelligence-intakes-v1",
+  "classification": "synthetic",
+  "purpose": "Evaluate the offline core company profile intake contract.",
+  "rows": [
+    {
+      "companies_house_number": "SC123456",
+      "website": "https://aster-synthetic.example/",
+      "company_name": "Aster Synthetic Ltd",
+      "jurisdiction": "SC"
+    },
+    {
+      "companies_house_number": "00000042",
+      "website": "",
+      "company_name": "",
+      "jurisdiction": "EW"
+    },
+    {
+      "companies_house_number": "",
+      "website": "https://boreal-synthetic.example/research",
+      "company_name": "Boreal Synthetic",
+      "jurisdiction": "GB"
+    }
+  ]
+}

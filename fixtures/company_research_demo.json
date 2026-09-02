@@ -1,0 +1,167 @@
+{
+  "schema_version": "company-research-fixture-v1",
+  "notice": "Synthetic offline research fixture. No sentence here describes a real organisation. It exists so the bounded research workflow can be exercised without a model call or any outbound request; every claim it proposes is still validated by the same exact-span, cutoff, privacy, injection and contradiction rules as live model output.",
+  "pages": [
+    {
+      "url": "https://find-and-update.company-information.service.gov.uk/company/{number}",
+      "title": "Companies House register extract",
+      "media_type": "text/html",
+      "outcome": "ok",
+      "paragraphs": [
+        {
+          "category": "identity",
+          "subject_key": "registered_status",
+          "perspective": "fact",
+          "text": "Company number {number} is recorded on the register as an active private company limited by shares."
+        },
+        {
+          "category": "identity",
+          "subject_key": "registered_office",
+          "perspective": "fact",
+          "text": "The registered office address is unchanged since the confirmation statement filed in November 2024."
+        },
+        {
+          "category": "corporate_actions",
+          "subject_key": "accounts_filed_2024",
+          "perspective": "fact",
+          "event_date": "2024",
+          "text": "Full accounts made up to 31 March 2024 were filed with the registrar and appear in the filing history."
+        },
+        {
+          "category": "corporate_actions",
+          "subject_key": "charge_registered_2024",
+          "perspective": "fact",
+          "event_date": "2024",
+          "text": "One outstanding charge was registered against the company during 2024 and no charge has been satisfied since."
+        },
+        {
+          "category": "funding",
+          "subject_key": "series_a_2024",
+          "perspective": "fact",
+          "event_date": "2024",
+          "amount": "4500000",
+          "currency": "GBP",
+          "text": "A statement of capital filed in November 2024 records total share capital of GBP 4500000 after the latest allotment."
+        }
+      ]
+    },
+    {
+      "url": "https://gtr.ukri.org/projects?ref={number}",
+      "title": "UKRI Gateway to Research project record",
+      "media_type": "text/html",
+      "outcome": "ok",
+      "paragraphs": [
+        {
+          "category": "awards",
+          "subject_key": "grant_funding",
+          "perspective": "fact",
+          "event_date": "2024",
+          "amount": "412000",
+          "currency": "GBP",
+          "text": "An Innovate UK smart grant of GBP 412000 was awarded in June 2024 for a twenty four month applied research project."
+        },
+        {
+          "category": "awards",
+          "subject_key": "research_collaborations_reported",
+          "perspective": "fact",
+          "text": "The funded project record lists one academic collaborator and names the company as the lead participating organisation."
+        },
+        {
+          "category": "regulation",
+          "subject_key": "grant_conditions",
+          "perspective": "fact",
+          "text": "Grant terms published alongside the award require quarterly reporting of project milestones to the funding body."
+        }
+      ]
+    },
+    {
+      "url": "https://www.{slug}.example/about",
+      "title": "Company website",
+      "media_type": "text/html",
+      "outcome": "ok",
+      "paragraphs": [
+        {
+          "category": "products_market",
+          "subject_key": "product_line",
+          "perspective": "company_self_claim",
+          "text": "The company describes its platform as a workflow product for regulated industrial maintenance teams in the United Kingdom."
+        },
+        {
+          "category": "products_market",
+          "subject_key": "market_segment",
+          "perspective": "company_self_claim",
+          "text": "Published customer pages name three sectors: water utilities, rail infrastructure and offshore energy operators."
+        },
+        {
+          "category": "performance",
+          "subject_key": "reported_customers",
+          "perspective": "company_self_claim",
+          "text": "The website states that the platform was used by twenty eight enterprise customers during the 2024 calendar year."
+        },
+        {
+          "category": "funding",
+          "subject_key": "series_a_2024",
+          "perspective": "company_self_claim",
+          "event_date": "2024",
+          "amount": "6200000",
+          "currency": "GBP",
+          "text": "The company newsroom states that a Series A round of GBP 6200000 completed in October 2024."
+        },
+        {
+          "category": "challenges",
+          "subject_key": "hiring_constraint",
+          "perspective": "company_self_claim",
+          "text": "A published engineering update describes recruitment for specialist field roles as the main delivery constraint in 2024."
+        },
+        {
+          "category": "technology",
+          "subject_key": "platform_stack",
+          "perspective": "company_self_claim",
+          "text": "Public engineering pages describe a hosted service with a stated data residency commitment inside the United Kingdom."
+        }
+      ]
+    },
+    {
+      "url": "https://www.industryledger.example/news/{slug}-series-a",
+      "title": "Trade coverage of the reported round",
+      "media_type": "text/html",
+      "outcome": "ok",
+      "paragraphs": [
+        {
+          "category": "public_discourse",
+          "subject_key": "round_coverage_2024",
+          "perspective": "public_discourse",
+          "event_date": "2024",
+          "text": "Trade press reported in October 2024 that an institutional investor led the round without naming the investor."
+        },
+        {
+          "category": "public_discourse",
+          "subject_key": "coverage_caveat",
+          "perspective": "public_discourse",
+          "text": "The same article notes the reported round size was not confirmed by any filing on the public register at publication."
+        }
+      ]
+    },
+    {
+      "url": "https://www.paywalledreview.example/{slug}",
+      "title": "Publisher disallows automated capture",
+      "media_type": "text/html",
+      "outcome": "robots_blocked",
+      "paragraphs": []
+    },
+    {
+      "url": "https://cdn.filings.example/{slug}/annual-report.pdf",
+      "title": "Annual report (PDF)",
+      "media_type": "application/pdf",
+      "outcome": "unsupported_media",
+      "paragraphs": []
+    },
+    {
+      "url": "https://www.regionalbusinesswire.example/{slug}/update",
+      "title": "Regional business wire (transport failure)",
+      "media_type": "text/html",
+      "outcome": "fetch_failed",
+      "paragraphs": []
+    }
+  ]
+}

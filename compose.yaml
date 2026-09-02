@@ -1,0 +1,73 @@
+services:
+  api:
+    image: agentic-portfolio-api:local
+    build:
+      context: .
+      target: runtime
+    init: true
+    environment:
+      PORTFOLIO_DATABASE_URL: sqlite:////app/var/portfolio.db
+      PORTFOLIO_RAW_DATA_DIR: /app/var/raw
+      PORTFOLIO_SOURCE_SNAPSHOT_DIR: /app/var/sources
+      PORTFOLIO_REVIEWER_NAME: ${PORTFOLIO_REVIEWER_NAME:?Set PORTFOLIO_REVIEWER_NAME to the accountable local reviewer}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in the private local .env}
+      PORTFOLIO_ALLOW_EXTERNAL_LLM: "true"
+      PORTFOLIO_ALLOW_LIVE_PUBLIC_RETRIEVAL: "true"
+      PORTFOLIO_OPENAI_REASONING_EFFORT: ${PORTFOLIO_OPENAI_REASONING_EFFORT:-medium}
+      PORTFOLIO_OPENAI_TIMEOUT_SECONDS: ${PORTFOLIO_OPENAI_TIMEOUT_SECONDS:-120}
+      PORTFOLIO_COMPANY_RESEARCH_MAX_ELAPSED_SECONDS: ${PORTFOLIO_COMPANY_RESEARCH_MAX_ELAPSED_SECONDS:-240}
+    expose:
+      - "8000"
+    volumes:
+      - portfolio-state:/app/var
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+
+  app:
+    image: agentic-portfolio:local
+    build:
+      context: .
+      target: dashboard-runtime
+    init: true
+    environment:
+      PORTFOLIO_API_ORIGIN: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PORTFOLIO_PORT:-8000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+
+  test:
+    profiles:
+      - test
+    image: agentic-portfolio:test
+    build:
+      context: .
+      target: test
+    read_only: true
+    environment:
+      COVERAGE_FILE: /tmp/.coverage
+    tmpfs:
+      - /tmp:mode=1777
+      - /app/var:uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  portfolio-state:
