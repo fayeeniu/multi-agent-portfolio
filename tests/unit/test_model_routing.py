@@ -54,17 +54,31 @@ class _Recorder:
             '{"sources":[{"url":"https://example.com/a",'
             '"title":"Example source","category":"other"}]}'
         ),
+        *,
+        output_tokens: int = 5,
+        status: str = "completed",
+        incomplete_reason: str | None = None,
     ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._output_text = output_text
+        self._output_tokens = output_tokens
+        self._status = status
+        self._incomplete_reason = incomplete_reason
 
     def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
+        incomplete = (
+            SimpleNamespace(reason=self._incomplete_reason)
+            if self._incomplete_reason is not None
+            else None
+        )
         return SimpleNamespace(
             output_text=self._output_text,
             model=kwargs["model"],
-            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            usage=SimpleNamespace(input_tokens=10, output_tokens=self._output_tokens),
             output=[],
+            status=self._status,
+            incomplete_details=incomplete,
         )
 
 
@@ -233,6 +247,49 @@ def test_extraction_sends_the_routed_model_and_keeps_the_strict_schema(tmp_path:
     for call in (first, second):
         assert call["store"] is False
         assert call["text"]["format"]["strict"] is True
+
+
+def test_truncated_extraction_is_mapped_without_leaking_provider_text(
+    tmp_path: Path,
+) -> None:
+    recorder = _Recorder(
+        output_text='{"claims":[{"category":"funding"',
+        output_tokens=10_000,
+        status="incomplete",
+        incomplete_reason="max_output_tokens",
+    )
+    client = _client(tmp_path, recorder)
+    with pytest.raises(company_research.CompanyResearchError) as caught:
+        client.extract(
+            company_number="00000006",
+            company_name="Example Ltd",
+            cutoff=CUTOFF,
+            sources=[{"url": "https://example.com/a", "title": "A", "text": "text"}],
+            max_output_tokens=10_000,
+        )
+    assert caught.value.code == "model_output_truncated"
+    assert "output-token cap" in str(caught.value)
+    assert caught.value.telemetry is not None
+    assert caught.value.telemetry.output_tokens == 10_000
+    assert '{"claims"' not in str(caught.value)
+
+
+def test_extraction_that_hits_the_token_cap_is_truncated_not_schema_invalid(
+    tmp_path: Path,
+) -> None:
+    recorder = _Recorder(output_text="not-json", output_tokens=24_000)
+    client = _client(tmp_path, recorder)
+    with pytest.raises(company_research.CompanyResearchError) as caught:
+        client.extract(
+            company_number="00000006",
+            company_name="Example Ltd",
+            cutoff=CUTOFF,
+            sources=[{"url": "https://example.com/a", "title": "A", "text": "text"}],
+            max_output_tokens=24_000,
+        )
+    assert caught.value.code == "model_output_truncated"
+    assert caught.value.telemetry is not None
+    assert caught.value.telemetry.output_tokens == 24_000
 
 
 def test_the_extraction_brief_states_every_rule_the_validator_enforces() -> None:

@@ -41,7 +41,7 @@ class Settings:
     company_research_max_tool_calls: int = 12
     company_research_max_source_chars: int = 12_000
     company_research_max_corpus_chars: int = 160_000
-    company_research_max_output_tokens: int = 10_000
+    company_research_max_output_tokens: int = 24_000
     company_research_max_redirects: int = 3
     company_research_max_elapsed_seconds: int = 240
     reviewer_name: str | None = None
@@ -91,7 +91,7 @@ class Settings:
                 os.getenv("PORTFOLIO_COMPANY_RESEARCH_MAX_CORPUS_CHARS", "160000")
             ),
             company_research_max_output_tokens=int(
-                os.getenv("PORTFOLIO_COMPANY_RESEARCH_MAX_OUTPUT_TOKENS", "10000")
+                os.getenv("PORTFOLIO_COMPANY_RESEARCH_MAX_OUTPUT_TOKENS", "24000")
             ),
             company_research_max_redirects=int(
                 os.getenv("PORTFOLIO_COMPANY_RESEARCH_MAX_REDIRECTS", "3")

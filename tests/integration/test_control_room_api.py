@@ -198,6 +198,44 @@ def test_run_advance_marks_a_transient_stage_failure_as_automatically_retryable(
 
 
 @pytest.mark.integration
+def test_model_output_truncated_is_recorded_as_a_safe_automatically_retryable_failure(
+    fixture_runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, token = _client(fixture_runtime)
+    _, case_id = _open_case(client, token)
+    run_id = client.post(
+        f"/api/research-cases/{case_id}/runs", json={"csrf_token": token}
+    ).json()["run"]["id"]
+    assert fixture_runtime.company_research is not None
+    model = fixture_runtime.company_research._model
+
+    def truncated_discovery(**kwargs: Any) -> Any:
+        del kwargs
+        raise company_research.CompanyResearchError(
+            "The model hit its output-token cap before finishing a usable discovery response.",
+            code="model_output_truncated",
+        )
+
+    monkeypatch.setattr(model, "discover", truncated_discovery)
+
+    failed = client.post(
+        f"/api/research-runs/{run_id}/advance", json={"csrf_token": token}
+    )
+    assert failed.status_code == 200
+    assert failed.json()["advance"] == {
+        "ok": False,
+        "capability": "discover_sources",
+        "code": "model_output_truncated",
+        "message": (
+            "The model hit its output-token cap before finishing a usable discovery response."
+        ),
+        "elapsed_ms": failed.json()["advance"]["elapsed_ms"],
+        "retryable": True,
+        "attempts_remaining": 1,
+    }
+
+
 def test_model_timeout_is_recorded_as_a_safe_automatically_retryable_failure(
     fixture_runtime: Runtime,
     monkeypatch: pytest.MonkeyPatch,

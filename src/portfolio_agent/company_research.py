@@ -107,10 +107,19 @@ TASKS: tuple[tuple[int, str], ...] = (
 TASK_MAX_ATTEMPTS = 2
 MODEL_CALL_BUDGET = 4
 DISCOVERY_ATTEMPT_TIMEOUT_SECONDS = (90.0, 35.0)
-EXTRACTION_ATTEMPT_TIMEOUT_SECONDS = (60.0, 30.0)
+#: Per model call, not a budget to split across extraction batches. A repair
+#: attempt keeps the same cap so a timeout retry is not starved. High-effort
+#: extraction on a wide captured corpus needs the full client timeout; a 30–60s
+#: split is what produced the repeated Monq model_timeout failures.
+EXTRACTION_ATTEMPT_TIMEOUT_SECONDS = (120.0, 120.0)
+#: Do not open a second extraction batch unless it would still receive this
+#: much time after the first call's cap is reserved.
+EXTRACTION_BATCH_MIN_SECONDS = 45.0
 CAPTURE_STAGE_BUDGET_SECONDS = 45.0
-CAPTURE_DOWNSTREAM_RESERVE_SECONDS = 70.0
 FINALIZATION_RESERVE_SECONDS = 5.0
+CAPTURE_DOWNSTREAM_RESERVE_SECONDS = (
+    EXTRACTION_ATTEMPT_TIMEOUT_SECONDS[0] + FINALIZATION_RESERVE_SECONDS
+)
 MIN_NETWORK_TIMEOUT_SECONDS = 1.0
 RESTARTABLE_RUN_STATUSES = frozenset(
     {
@@ -364,6 +373,59 @@ def _walk(value: Any) -> Iterable[Any]:
     elif isinstance(value, list | tuple):
         for child in value:
             yield from _walk(child)
+
+
+def _incomplete_reason(response: Any) -> str | None:
+    status = getattr(response, "status", None)
+    details = getattr(response, "incomplete_details", None)
+    reason: str | None = None
+    if isinstance(details, Mapping):
+        raw = details.get("reason")
+        reason = raw if isinstance(raw, str) else None
+    elif details is not None:
+        raw = getattr(details, "reason", None)
+        reason = raw if isinstance(raw, str) else None
+    if status == "incomplete" or reason == "max_output_tokens":
+        return reason or "incomplete"
+    return None
+
+
+def _output_hit_token_cap(result: ModelCallResult, max_output_tokens: int) -> bool:
+    return (
+        result.output_tokens is not None
+        and max_output_tokens > 0
+        and result.output_tokens >= max_output_tokens
+    )
+
+
+def _load_structured_model(
+    model_cls: type[Any],
+    output_text: str,
+    *,
+    result: ModelCallResult,
+    response: Any,
+    max_output_tokens: int,
+    invalid_message: str,
+    stage: str,
+) -> Any:
+    """Parse a strict model envelope without leaking provider text."""
+
+    try:
+        return model_cls.model_validate_json(output_text)
+    except (ValidationError, json.JSONDecodeError) as exc:
+        if _incomplete_reason(response) is not None or _output_hit_token_cap(
+            result, max_output_tokens
+        ):
+            raise CompanyResearchError(
+                f"The model hit its output-token cap before finishing a usable {stage} response.",
+                code="model_output_truncated",
+                telemetry=result,
+            ) from exc
+        raise CompanyResearchError(
+            invalid_message,
+            code="model_schema_invalid",
+            telemetry=result,
+        ) from exc
 
 
 def canonical_public_url(value: str) -> str:
@@ -646,6 +708,30 @@ def _partition_extraction_sources(
         for index in range(batch_count)
         if sources[index::batch_count]
     ]
+
+
+def _extraction_batch_count(
+    *,
+    packed_count: int,
+    attempt_number: int,
+    available_model_calls: int,
+    stage_seconds: float,
+    per_call_cap: float,
+) -> int:
+    """Use two batches only when each call can still receive a usable deadline.
+
+    Repair attempts stay eligible. Forcing a wide corpus back into one call is
+    how a first-batch schema failure became a harder second-attempt truncation.
+    """
+
+    del attempt_number
+    if (
+        packed_count >= 6
+        and available_model_calls >= 2
+        and stage_seconds >= per_call_cap + EXTRACTION_BATCH_MIN_SECONDS
+    ):
+        return 2
+    return 1
 
 
 def _claim_span_is_long_enough(
@@ -1268,14 +1354,15 @@ class OpenAICompanyResearchClient:
             output_tokens=getattr(usage, "output_tokens", None),
             tool_calls=tool_calls,
         )
-        try:
-            envelope = ResearchDiscoveryEnvelope.model_validate_json(result.output_text)
-        except (ValidationError, json.JSONDecodeError) as exc:
-            raise CompanyResearchError(
-                "Model discovery did not satisfy the strict source-plan schema.",
-                code="model_schema_invalid",
-                telemetry=result,
-            ) from exc
+        envelope = _load_structured_model(
+            ResearchDiscoveryEnvelope,
+            result.output_text,
+            result=result,
+            response=response,
+            max_output_tokens=max_output_tokens,
+            invalid_message="Model discovery did not satisfy the strict source-plan schema.",
+            stage="discovery",
+        )
         candidates: list[DiscoveredSource] = []
         for planned in envelope.sources:
             try:
@@ -1348,14 +1435,15 @@ class OpenAICompanyResearchClient:
             output_tokens=getattr(usage, "output_tokens", None),
             tool_calls=0,
         )
-        try:
-            envelope = ResearchExtractionEnvelope.model_validate_json(result.output_text)
-        except (ValidationError, json.JSONDecodeError) as exc:
-            raise CompanyResearchError(
-                "Model extraction did not satisfy the strict claim schema.",
-                code="model_schema_invalid",
-                telemetry=result,
-            ) from exc
+        envelope = _load_structured_model(
+            ResearchExtractionEnvelope,
+            result.output_text,
+            result=result,
+            response=response,
+            max_output_tokens=max_output_tokens,
+            invalid_message="Model extraction did not satisfy the strict claim schema.",
+            stage="extraction",
+        )
         return envelope, result
 
 
@@ -2514,33 +2602,45 @@ class CompanyResearchService:
         available_model_calls = int(budgets["model_calls"]) - int(
             run.usage_json.get("model_calls", 0)
         )
-        batch_count = (
-            2
-            if attempt_number == 1 and len(packed) >= 6 and available_model_calls >= 3
-            else 1
+        stage_seconds = (
+            self._remaining_run_seconds(run_id, budgets) - FINALIZATION_RESERVE_SECONDS
         )
-        batches = _partition_extraction_sources(packed, batch_count) if packed else []
-        stage_timeout_seconds = self._model_timeout_for(
+        if stage_seconds < MIN_NETWORK_TIMEOUT_SECONDS:
+            raise CompanyResearchError(
+                "The four-minute research execution budget is exhausted.",
+                code="run_deadline_exceeded",
+            )
+        per_call_cap = self._model_timeout_for(
             run_id,
             "extract_claims",
             attempt_number,
             budgets,
         )
-        stage_deadline = time.perf_counter() + stage_timeout_seconds
+        batch_count = _extraction_batch_count(
+            packed_count=len(packed),
+            attempt_number=attempt_number,
+            available_model_calls=available_model_calls,
+            stage_seconds=stage_seconds,
+            per_call_cap=per_call_cap,
+        )
+        batches = _partition_extraction_sources(packed, batch_count) if packed else []
+        stage_deadline = time.perf_counter() + stage_seconds
         envelopes: list[ResearchExtractionEnvelope] = []
         telemetries: list[ModelCallResult] = []
-        for batch in batches:
+        for batch_index, batch in enumerate(batches):
             batch_time_remaining = stage_deadline - time.perf_counter()
-            if batch_time_remaining < MIN_NETWORK_TIMEOUT_SECONDS:
+            minimum = (
+                MIN_NETWORK_TIMEOUT_SECONDS
+                if batch_index == 0
+                else EXTRACTION_BATCH_MIN_SECONDS
+            )
+            if batch_time_remaining < minimum:
                 raise CompanyResearchError(
                     "The extraction stage exhausted its share of the research deadline.",
                     code="run_deadline_exceeded",
                 )
             self._reserve_model_call(run_id, "extract_claims", attempt_number, input_hash)
-            timeout_seconds = min(
-                batch_time_remaining,
-                stage_timeout_seconds / len(batches),
-            )
+            timeout_seconds = min(batch_time_remaining, per_call_cap)
             try:
                 envelope, batch_telemetry = self._model.extract(
                     company_number=identifier.normalized_value,

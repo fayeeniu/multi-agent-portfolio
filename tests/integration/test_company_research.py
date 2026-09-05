@@ -15,6 +15,8 @@ from sqlalchemy import select
 from portfolio_agent.bootstrap import create_runtime, project_root
 from portfolio_agent.company_intelligence import CompanyIntakeRequest
 from portfolio_agent.company_research import (
+    EXTRACTION_ATTEMPT_TIMEOUT_SECONDS,
+    EXTRACTION_BATCH_MIN_SECONDS,
     CompanyResearchError,
     DiscoveredSource,
     ExtractedResearchClaim,
@@ -25,6 +27,7 @@ from portfolio_agent.company_research import (
     SafePublicFetcher,
     _balanced_source_order,
     _claim_span_is_long_enough,
+    _extraction_batch_count,
     _official_identity_claims,
     _partition_extraction_sources,
     _PinnedNetworkBackend,
@@ -54,6 +57,8 @@ class _FakeResearchModel:
         self.extraction_calls = 0
         self.discovery_attempts: list[int] = []
         self.extraction_attempts: list[int] = []
+        self.extraction_timeouts: list[float] = []
+        self.extraction_source_urls: list[list[str]] = []
 
     def discover(
         self,
@@ -72,7 +77,7 @@ class _FakeResearchModel:
         assert cutoff == date(2026, 8, 27)
         assert max_sources == 8
         assert max_tool_calls == 12
-        assert max_output_tokens == 10_000
+        assert max_output_tokens == 24_000
         assert 0 < timeout_seconds <= 90
         assert attempt >= 1
         self.discovery_attempts.append(attempt)
@@ -108,10 +113,12 @@ class _FakeResearchModel:
         assert company_number == "00000006"
         assert cutoff == date(2026, 8, 27)
         assert len(sources) == 2
-        assert max_output_tokens == 10_000
-        assert 0 < timeout_seconds <= 60
+        assert max_output_tokens == 24_000
+        assert 0 < timeout_seconds <= EXTRACTION_ATTEMPT_TIMEOUT_SECONDS[0]
         assert all("investor@example.com" not in source["text"] for source in sources)
         assert any("[personal contact redacted]" in source["text"] for source in sources)
+        self.extraction_timeouts.append(timeout_seconds)
+        self.extraction_source_urls.append([source["url"] for source in sources])
         self.extraction_calls += 1
         valid_span = "The company announced a £2 million investment round in June 2026."
         envelope = ResearchExtractionEnvelope(
@@ -289,6 +296,113 @@ class _NoDeterministicIdentityFetcher(_FakeFetcher):
                 b"2025.</p></body></html>"
             ),
             retrieved_at=page.retrieved_at,
+        )
+
+
+_WIDE_CORPUS_SPAN = "The company announced a £2 million investment round in June 2026."
+_BLOCKED_SOURCE_URL = "https://news-0.example/update"
+
+
+class _WideCorpusExtractModel:
+    """Discovery plus extraction recorder for an 8-captured / 1-blocked corpus."""
+
+    def __init__(self) -> None:
+        self.extraction_timeouts: list[float] = []
+        self.extraction_source_urls: list[list[str]] = []
+        self.extraction_attempts: list[int] = []
+
+    def discover(
+        self,
+        *,
+        company_number: str,
+        company_name: str,
+        cutoff: date,
+        max_sources: int,
+        max_tool_calls: int,
+        max_output_tokens: int,
+        timeout_seconds: float,
+        attempt: int = 1,
+    ) -> ModelCallResult:
+        del company_name, cutoff, max_tool_calls, max_output_tokens, timeout_seconds, attempt
+        assert company_number == "00000006"
+        assert max_sources == 9
+        return ModelCallResult(
+            output_text="Wide corpus source map",
+            model="gpt-5.6-luna",
+            input_tokens=80,
+            output_tokens=40,
+            tool_calls=2,
+            sources=tuple(
+                DiscoveredSource(f"https://news-{index}.example/update", f"News {index}")
+                for index in range(9)
+            ),
+        )
+
+    def extract(
+        self,
+        *,
+        company_number: str,
+        company_name: str,
+        cutoff: date,
+        sources: list[dict[str, str]],
+        max_output_tokens: int,
+        timeout_seconds: float,
+        attempt: int = 1,
+    ) -> tuple[ResearchExtractionEnvelope, ModelCallResult]:
+        del company_name, cutoff, max_output_tokens
+        assert company_number == "00000006"
+        self.extraction_attempts.append(attempt)
+        self.extraction_timeouts.append(timeout_seconds)
+        self.extraction_source_urls.append([source["url"] for source in sources])
+        envelope = ResearchExtractionEnvelope(
+            claims=[
+                ExtractedResearchClaim(
+                    category=ResearchClaimCategory.FUNDING,
+                    subject_key="investment_round_2026_06",
+                    statement=_WIDE_CORPUS_SPAN,
+                    source_url="https://news-1.example/update",
+                    evidence_span=_WIDE_CORPUS_SPAN,
+                    event_date="2026-06",
+                    amount="2000000",
+                    currency="GBP",
+                    perspective="company_self_claim",
+                )
+            ]
+        )
+        return envelope, ModelCallResult(
+            output_text=envelope.model_dump_json(),
+            model="gpt-5.6-luna",
+            input_tokens=400,
+            output_tokens=80,
+            tool_calls=0,
+        )
+
+
+class _WideCorpusFetcher:
+    def fetch(self, url: str, **budgets: Any) -> FetchedPage:
+        del budgets
+        if url == _BLOCKED_SOURCE_URL:
+            raise CompanyResearchError(
+                "Publisher robots policy disallows capture.", code="robots_blocked"
+            )
+        marker = url.split("://", 1)[-1]
+        unique = (
+            f"This captured page {marker} publishes a distinct operating update "
+            "with additional public context for extraction."
+        )
+        content = (
+            "<html><body>"
+            f"<p>{_WIDE_CORPUS_SPAN}</p>"
+            f"<p>{unique}</p>"
+            "</body></html>"
+        ).encode()
+        return FetchedPage(
+            requested_url=url,
+            final_url=url,
+            status_code=200,
+            media_type="text/html",
+            content=content,
+            retrieved_at=datetime(2026, 8, 27, tzinfo=UTC),
         )
 
 
@@ -685,6 +799,59 @@ def test_rejected_model_response_consumes_retry_inclusive_call_budget(tmp_path: 
             )
             assert [attempt.input_tokens for attempt in attempts] == [900, 900]
             assert [attempt.output_tokens for attempt in attempts] == [240, 240]
+        assert len(model.extraction_timeouts) == 2
+        first_cap, repair_cap = EXTRACTION_ATTEMPT_TIMEOUT_SECONDS
+        assert model.extraction_timeouts[0] == pytest.approx(first_cap, abs=1)
+        assert model.extraction_timeouts[1] == pytest.approx(repair_cap, abs=1)
+        assert model.extraction_timeouts[1] >= model.extraction_timeouts[0] - 1
+    finally:
+        runtime.engine.dispose()
+
+
+def test_blocked_sibling_is_excluded_and_batches_keep_a_full_call_timeout(
+    tmp_path: Path,
+) -> None:
+    model = _WideCorpusExtractModel()
+    runtime = create_runtime(
+        _settings(tmp_path, company_research_max_sources=9),
+        company_research_client=model,  # type: ignore[arg-type]
+        public_fetcher=_WideCorpusFetcher(),  # type: ignore[arg-type]
+    )
+    try:
+        _, case_id = _public_case(runtime)
+        assert runtime.company_research is not None
+        run = runtime.company_research.start(
+            case_id,
+            actor="Named Research Reviewer",
+            cutoff=date(2026, 8, 27),
+        )
+        assert runtime.company_research.advance(run.id).capability == "discover_sources"
+        assert runtime.company_research.advance(run.id).capability == "capture_sources"
+        assert runtime.company_research.advance(run.id).capability == "extract_claims"
+
+        with runtime.session_factory() as session:
+            sources = list(
+                session.scalars(
+                    select(CompanyResearchSourceModel).where(
+                        CompanyResearchSourceModel.research_run_id == run.id
+                    )
+                )
+            )
+        statuses = {source.url: source.status for source in sources}
+        assert statuses[_BLOCKED_SOURCE_URL] == "blocked"
+        fetched_urls = {source.url for source in sources if source.status == "fetched"}
+        assert len(fetched_urls) == 8
+        packed_urls = [url for batch in model.extraction_source_urls for url in batch]
+        assert _BLOCKED_SOURCE_URL not in packed_urls
+        assert set(packed_urls) == fetched_urls
+        assert len(model.extraction_timeouts) == 2
+        per_call_cap = EXTRACTION_ATTEMPT_TIMEOUT_SECONDS[0]
+        for timeout_seconds in model.extraction_timeouts:
+            assert timeout_seconds > per_call_cap / 2
+            assert timeout_seconds <= per_call_cap
+        assert all(
+            timeout_seconds >= per_call_cap - 1 for timeout_seconds in model.extraction_timeouts
+        )
     finally:
         runtime.engine.dispose()
 
@@ -933,6 +1100,60 @@ def test_extraction_batches_keep_balanced_sources_distributed() -> None:
         [f"https://source.example/{index}" for index in (0, 2, 4, 6)],
         [f"https://source.example/{index}" for index in (1, 3, 5, 7)],
     ]
+
+
+def test_extraction_batches_only_when_two_full_calls_fit() -> None:
+    per_call_cap = EXTRACTION_ATTEMPT_TIMEOUT_SECONDS[0]
+    assert (
+        _extraction_batch_count(
+            packed_count=8,
+            attempt_number=1,
+            available_model_calls=3,
+            stage_seconds=per_call_cap + EXTRACTION_BATCH_MIN_SECONDS,
+            per_call_cap=per_call_cap,
+        )
+        == 2
+    )
+    assert (
+        _extraction_batch_count(
+            packed_count=8,
+            attempt_number=1,
+            available_model_calls=3,
+            stage_seconds=per_call_cap + EXTRACTION_BATCH_MIN_SECONDS - 1,
+            per_call_cap=per_call_cap,
+        )
+        == 1
+    )
+    assert (
+        _extraction_batch_count(
+            packed_count=8,
+            attempt_number=2,
+            available_model_calls=2,
+            stage_seconds=180,
+            per_call_cap=per_call_cap,
+        )
+        == 2
+    )
+    assert (
+        _extraction_batch_count(
+            packed_count=8,
+            attempt_number=2,
+            available_model_calls=1,
+            stage_seconds=180,
+            per_call_cap=per_call_cap,
+        )
+        == 1
+    )
+    assert (
+        _extraction_batch_count(
+            packed_count=5,
+            attempt_number=1,
+            available_model_calls=3,
+            stage_seconds=180,
+            per_call_cap=per_call_cap,
+        )
+        == 1
+    )
 
 
 def test_short_claim_exception_is_only_for_official_identity_fields() -> None:
