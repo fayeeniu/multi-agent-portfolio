@@ -179,6 +179,7 @@ _SOURCE_TIER_LABELS: dict[str, str] = {
 _AUTOMATIC_RETRY_CODES = frozenset(
     {
         "model_schema_invalid",
+        "model_output_truncated",
         "model_timeout",
         "model_connection_failed",
         "model_rate_limited",

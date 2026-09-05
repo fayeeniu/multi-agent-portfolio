@@ -35,6 +35,8 @@ export interface AgentGraphProps {
   onSelect: (selection: Selection) => void;
   /** Wall-clock start of the stage currently executing in this browser, if any. */
   runningSince: number | null;
+  /** Task id that owns `runningSince`. Other nodes keep their persisted duration. */
+  runningCapability: string | null;
 }
 
 function measure(element: HTMLElement, origin: DOMRect): Box {
@@ -155,6 +157,7 @@ export function AgentGraph({
   selection,
   onSelect,
   runningSince,
+  runningCapability,
 }: AgentGraphProps) {
   const wrapper = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLElement>());
@@ -382,6 +385,7 @@ export function AgentGraph({
                 selected={selectedNode === node.id}
                 dimmed={anythingSelected && selectedNode !== node.id && selection?.kind === "node"}
                 runningSince={runningSince}
+                runningCapability={runningCapability}
                 onSelect={() => onSelect(selectedNode === node.id ? null : { kind: "node", id: node.id })}
                 onHover={(active) =>
                   setHover(active ? { kind: "node", id: node.id } : null)
@@ -486,6 +490,7 @@ interface CardProps {
   outboundDir: PortDir;
   hasDrop: boolean;
   runningSince: number | null;
+  runningCapability: string | null;
   onSelect: () => void;
   onHover: (active: boolean) => void;
   register: (element: HTMLElement | null) => void;
@@ -501,11 +506,14 @@ function GraphNodeCard({
   outboundDir,
   hasDrop,
   runningSince,
+  runningCapability,
   onSelect,
   onHover,
   register,
 }: CardProps) {
-  const live = node.status === "running";
+  const live =
+    node.status === "running" &&
+    (runningCapability === null || runningCapability === node.id);
   const elapsed = useElapsed(live, runningSince);
   return (
     <button
