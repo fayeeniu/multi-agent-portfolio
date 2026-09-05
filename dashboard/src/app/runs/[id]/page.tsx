@@ -11,6 +11,7 @@ import { BoardSkeleton, EmptyState, ErrorNote, NextActionBanner, Panel, Pill, Se
 import { ApiError, apiPost } from "@/lib/api";
 import { formatDate, formatDuration, humanize } from "@/lib/format";
 import { useDocumentTitle, useElapsed, useResource } from "@/lib/hooks";
+import { applyInflightOverlay, nextTaskCapability } from "@/lib/run-graph";
 import type { GraphNode, RunPayload, SessionPayload } from "@/lib/types";
 
 const ACTIVE_STATUSES = new Set(["pending", "running"]);
@@ -26,20 +27,23 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   const [autoRun, setAutoRun] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const abort = useRef(false);
+  const payloadRef = useRef<RunPayload | null>(null);
 
   const session = useResource<SessionPayload>("session");
   const active = inflight !== null;
   const run = useResource<RunPayload>(`research-runs/${id}`, active ? 1500 : 0);
   const payload = run.data;
+  payloadRef.current = payload ?? null;
 
   const elapsed = useElapsed(inflight !== null, inflight?.since ?? null);
 
-  const advance = useCallback(async (showStageError = true): Promise<RunPayload | null> => {
-    if (!payload) return null;
-    const capability =
-      payload.nodes.find(
-        (node) => node.kind === "task" && (node.status === "pending" || node.status === "failed"),
-      )?.id ?? "";
+  const advance = useCallback(async (
+    showStageError = true,
+    snapshot?: RunPayload | null,
+  ): Promise<RunPayload | null> => {
+    const current = snapshot ?? payloadRef.current;
+    if (!current) return null;
+    const capability = nextTaskCapability(current.nodes);
     setInflight({ capability, since: Date.now() });
     setActionError(null);
     try {
@@ -57,17 +61,19 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
     } finally {
       setInflight(null);
     }
-  }, [id, payload, run]);
+  }, [id, run]);
 
   const runToReview = useCallback(async () => {
     abort.current = false;
     setAutoRun(true);
     setAutoStatus("Starting the next persisted stage.");
     try {
+      let current = payloadRef.current;
       for (let step = 0; step < 12; step += 1) {
         if (abort.current) break;
-        const next = await advance(false);
+        const next = await advance(false, current);
         if (!next) break;
+        current = next;
         if (next.advance && !next.advance.ok) {
           if (next.advance.retryable) {
             setAutoStatus(
@@ -123,11 +129,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   }
 
   const { run: meta } = payload;
-  const nodes: GraphNode[] = payload.nodes.map((node) =>
-    inflight && node.id === inflight.capability && node.status !== "running"
-      ? { ...node, status: "running", detail: "Executing now. The stage holds an exclusive claim." }
-      : node,
-  );
+  const nodes: GraphNode[] = applyInflightOverlay(payload.nodes, inflight);
   const runnable = ACTIVE_STATUSES.has(meta.status);
   const restartable = RESTARTABLE_STATUSES.has(meta.status);
   const busy = inflight !== null || autoRun || restarting;
@@ -278,6 +280,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
           selection={selection}
           onSelect={setSelection}
           runningSince={inflight?.since ?? null}
+          runningCapability={inflight?.capability ?? null}
         />
       </section>
 
